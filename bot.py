@@ -130,7 +130,7 @@ async def clear_history_handler(message: types.Message, session: aiohttp.ClientS
         await message.answer("Ой-ой, что-то пошло не так, скоро меня починят😖")
 
 
-async def info_handler(message: types.Message):
+async def info_handler(message: types.Message, session: aiohttp.ClientSession):
     await message.answer(
         "Меня зовут Менон, я чат-бот Новосибирского Государственного Университета. "
         "Моя задача — помогать вам получать ответы на вопросы, связанные с НГУ, "
