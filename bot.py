@@ -162,6 +162,64 @@ def prepare_for_markdown_v2(text: str) -> str:
     return escape_markdown_v2(convert_double_to_single_stars(text))
 
 
+@router.message(F.sticker)
+async def handle_sticker(message: types.Message):
+    await message.answer("🧸 Стикеры — это весело, но я умею только читать текст. Спросите меня что-нибудь текстом!")
+
+
+@router.message(F.photo)
+async def handle_photo(message: types.Message):
+    await message.answer(
+        "📸 Картинки — это замечательно! Но я пока не понимаю изображения. Попробуйте написать мне вопрос текстом!")
+
+
+@router.message(F.video)
+async def handle_video(message: types.Message):
+    await message.answer("🎬 Видео — это здорово, но я разбираюсь только в тексте. Спросите меня что-нибудь!")
+
+
+@router.message(F.voice)
+async def handle_voice(message: types.Message):
+    await message.answer("🎤 Голос услышал, но мне бы текст — так я точно пойму и отвечу!")
+
+
+@router.message(F.video_note)
+async def handle_video_note(message: types.Message):
+    await message.answer("🎥 Кружочки прикольные, но я пока не умею их понимать. Попробуйте текстом, так веселее!")
+
+
+@router.message(F.audio)
+async def handle_audio(message: types.Message):
+    await message.answer("🎧 Музыку люблю, но я бот-помощник, так что давайте пообщаемся текстом!")
+
+
+@router.message(F.document)
+async def handle_document(message: types.Message):
+    await message.answer(
+        "📄 Файлы — это важно, но пока что я умею работать только с текстом. Спросите меня что-нибудь интересное!")
+
+
+@router.message(F.animation)
+async def handle_animation(message: types.Message):
+    await message.answer("🎞️ Гифка засчитана! Но текст — моё всё. Жду вопросик в виде слов!")
+
+
+@router.message(F.contact)
+async def handle_contact(message: types.Message):
+    await message.answer("📇 Контакт получил, но я предпочитаю текстовые беседы!")
+
+
+@router.message(F.location)
+async def handle_location(message: types.Message):
+    await message.answer("📍 Место зафиксировал! А я вот в НГУ нахожусь, можете меня что-нибудь спросить текстом!")
+
+
+@router.message(~F.text)
+async def handle_unknown(message: types.Message):
+    await message.answer(
+        "🤷 К сожалению, я пока умею понимать только текст. Напишите мне словами, и я постараюсь помочь!")
+
+
 async def main():
     load_phrases()
 
@@ -183,6 +241,19 @@ async def main():
     router.message.register(partial(info_handler), Command("info"))
     router.message.register(partial(message_handler, session=session, bot=bot), F.text)
 
+    router.message.register(handle_sticker, F.sticker)
+    router.message.register(handle_photo, F.photo)
+    router.message.register(handle_video, F.video)
+    router.message.register(handle_voice, F.voice)
+    router.message.register(handle_video_note, F.video_note)
+    router.message.register(handle_audio, F.audio)
+    router.message.register(handle_document, F.document)
+    router.message.register(handle_animation, F.animation)
+    router.message.register(handle_contact, F.contact)
+    router.message.register(handle_location, F.location)
+
+    # Fallback: всё остальное, что не текст
+    router.message.register(handle_unknown, ~F.text)
     dp.include_router(router)
 
     logging.info("Бот запущен")
