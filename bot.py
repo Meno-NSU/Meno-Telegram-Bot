@@ -60,6 +60,7 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
 
     try:
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        logging.info(f"Отправка запроса на бэкенд с payload: {payload}")
         reply = await get_backend_response(payload, session)
 
         await msg_to_edit.edit_text(reply)
@@ -85,7 +86,7 @@ async def message_handler(message: types.Message, session: aiohttp.ClientSession
         thinking_msg = await message.answer(random_phrase("thinking"))
 
         # запускаем бэкграунд-задачу
-        asyncio.create_task(
+        await asyncio.create_task(
             process_backend(message, session, thinking_msg, bot)
         )
     except Exception as e:
@@ -98,7 +99,7 @@ async def main():
 
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
-    timeout = ClientTimeout(total=20)
+    timeout = ClientTimeout(total=100)
     session = aiohttp.ClientSession(timeout=timeout)
 
     # Регистрация хендлеров
