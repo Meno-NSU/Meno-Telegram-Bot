@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 router = Router()
 pending_users = set()
 last_typing_times = defaultdict(lambda: 0)
-TYPING_INTERVAL = 2
+TYPING_INTERVAL = 4
 
 # Глобально загружаем фразы из JSON
 PHRASES = {
@@ -87,7 +87,7 @@ async def keep_typing(bot: Bot, chat_id: int):
             if now - last_typing_times[chat_id] >= TYPING_INTERVAL:
                 await bot.send_chat_action(chat_id=chat_id, action="typing")
                 last_typing_times[chat_id] = now
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
     except asyncio.CancelledError:
         pass
 
