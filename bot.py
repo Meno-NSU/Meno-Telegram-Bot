@@ -1,17 +1,16 @@
 import asyncio
+import json
 import logging
 import random
-import json
 from functools import partial
-from pathlib import Path
-import contextlib
-
-from aiogram import Bot, Dispatcher, F, Router, types
-from aiogram.filters import Command
-from config import settings
 
 import aiohttp
+from aiogram import Bot, Dispatcher, F, Router, types
+from aiogram.filters import Command
+from aiogram.types import BotCommand
 from aiohttp import ClientTimeout
+
+from config import settings
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
@@ -68,11 +67,10 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
         logging.info(f"Отправка запроса на бэкенд с payload: {payload}")
         reply = await get_backend_response(payload, session)
-
-        await msg_to_edit.edit_text(reply)
+        await msg_to_edit.edit_text(reply, parse_mode="MarkdownV2")
     except Exception as e:
         logging.error(f"Ошибка при обработке запроса: {e}")
-        await msg_to_edit.edit_text(random_phrase("fallback"))
+        await msg_to_edit.edit_text(random_phrase("fallback"), parse_mode="MarkdownV2")
     finally:
         pending_users.discard(user_id)  # всегда разблокируем
 
@@ -114,6 +112,17 @@ async def clear_history_handler(message: types.Message, session: aiohttp.ClientS
         await message.answer("Ой-ой, что-то пошло не так, скоро меня починят😖")
 
 
+async def info_handler(message: types.Message):
+    await message.answer(
+        "Меня зовут Менон, я чат-бот Новосибирского Государственного Университета. "
+        "Моя задача — помогать вам получать ответы на вопросы, связанные с НГУ, "
+        "образовательными программами, поступлением и жизнью в Академгородке.\n\n"
+        "Я работаю на основе большой языковой модели с поддержкой поиска по базе знаний университета 📚.\n\n"
+        "Иногда я могу генерировать ответы, которые могут быть восприняты как оскорбительные, дискриминационные или неподобающие. Пользователь обязан самостоятельно оценивать и фильтровать как вводные, так и полученные данные. "
+        "Команда разработчиков не несёт ответственности за любые последствия, возникшие в результате использования данной нейронной сети, включая, но не ограничиваясь, моральный ущерб, дискриминацию или нарушение прав третьих лиц."
+    )
+
+
 async def main():
     load_phrases()
 
@@ -122,9 +131,17 @@ async def main():
     timeout = ClientTimeout(total=100)
     session = aiohttp.ClientSession(timeout=timeout)
 
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Запуск бота"),
+        BotCommand(command="clear_history", description="Очистить историю диалога"),
+        BotCommand(command="info", description="Информация о боте"),
+        # BotCommand(command="about_us", description="Информация о разработчиках"),
+    ])
+
     # Регистрация хендлеров
     router.message.register(start_handler, Command("start"))
     router.message.register(partial(clear_history_handler, session=session), Command("clear_history"))
+    router.message.register(partial(info_handler, session=session, bot=bot), Command("info"))
     router.message.register(partial(message_handler, session=session, bot=bot), F.text)
 
     dp.include_router(router)
