@@ -148,7 +148,7 @@ def escape_markdown_v2(text: str) -> str:
     Экранирует спецсимволы MarkdownV2 согласно Telegram Bot API:
     https://core.telegram.org/bots/api#markdownv2-style
     """
-    escape_chars = r"_*[]()~`>#+-=|{}.!"
+    escape_chars = r"_*[]()~`>#+-=|{}.!\\"
     return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
 
 
