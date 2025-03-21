@@ -1,7 +1,10 @@
 import asyncio
+import contextlib
 import json
 import logging
 import random
+import time
+from collections import defaultdict
 from functools import partial
 
 import aiohttp
@@ -15,6 +18,8 @@ from config import settings
 logging.basicConfig(level=logging.INFO)
 router = Router()
 pending_users = set()
+last_typing_times = defaultdict(lambda: 0)
+TYPING_INTERVAL = 4
 
 # Глобально загружаем фразы из JSON
 PHRASES = {
@@ -75,6 +80,17 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
         pending_users.discard(user_id)  # всегда разблокируем
 
 
+async def keep_typing(bot: Bot, chat_id: int):
+    try:
+        while True:
+            now = time.time()
+            if now - last_typing_times[chat_id] >= TYPING_INTERVAL:
+                await bot.send_chat_action(chat_id=chat_id, action="typing")
+                last_typing_times[chat_id] = now
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        pass
+
 async def message_handler(message: types.Message, session: aiohttp.ClientSession, bot: Bot):
     user_id = message.from_user.id
 
@@ -84,17 +100,19 @@ async def message_handler(message: types.Message, session: aiohttp.ClientSession
 
     pending_users.add(user_id)
 
-    try:
-        # показываем заглушку
-        thinking_msg = await message.answer(random_phrase("thinking"))
+    thinking_msg = await message.answer(random_phrase("thinking"))
 
-        # запускаем бэкграунд-задачу
-        await asyncio.create_task(
-            process_backend(message, session, thinking_msg, bot)
-        )
+    typing_task = asyncio.create_task(keep_typing(bot, message.chat.id))
+    backend_task = asyncio.create_task(process_backend(message, session, thinking_msg, bot))
+    try:
+        await backend_task
     except Exception as e:
         logging.error(f"Ошибка в message_handler: {e}")
-        pending_users.discard(user_id)  # если что-то сломалось — разблокируем
+    finally:
+        typing_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await typing_task
+        pending_users.discard(user_id)
 
 
 async def clear_history_handler(message: types.Message, session: aiohttp.ClientSession):
