@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import random
+import re
 import time
 from collections import defaultdict
 from functools import partial
@@ -72,10 +73,10 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
         logging.info(f"Отправка запроса на бэкенд с payload: {payload}")
         reply = await get_backend_response(payload, session)
-        await msg_to_edit.edit_text(escape_markdown_v2(reply), parse_mode="MarkdownV2")
+        await msg_to_edit.edit_text(prepare_for_markdown_v2(reply), parse_mode="MarkdownV2")
     except Exception as e:
         logging.error(f"Ошибка при обработке запроса: {e}")
-        await msg_to_edit.edit_text(escape_markdown_v2(random_phrase("fallback")), parse_mode="MarkdownV2")
+        await msg_to_edit.edit_text(prepare_for_markdown_v2(random_phrase("fallback")), parse_mode="MarkdownV2")
     finally:
         pending_users.discard(user_id)  # всегда разблокируем
 
@@ -145,6 +146,15 @@ async def info_handler(message: types.Message):
 def escape_markdown_v2(text: str) -> str:
     escape_chars = r"\_*[]()~`>#+-=|{}.!"
     return ''.join(f'\\{c}' if c in escape_chars else c for c in text)
+
+
+def convert_double_to_single_stars(text: str) -> str:
+    # "**текст**" → "*текст*"
+    return re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
+
+
+def prepare_for_markdown_v2(text: str) -> str:
+    return escape_markdown_v2(convert_double_to_single_stars(text))
 
 
 async def main():
