@@ -247,10 +247,10 @@ async def main():
     router.message.register(handle_voice, F.voice)
     router.message.register(handle_video_note, F.video_note)
     router.message.register(handle_audio, F.audio)
-    router.message.register(handle_document, F.document)
     router.message.register(handle_animation, F.animation)
     router.message.register(handle_contact, F.contact)
     router.message.register(handle_location, F.location)
+    router.message.register(handle_document, F.document)
 
     # Fallback: всё остальное, что не текст
     router.message.register(handle_unknown, ~F.text)
