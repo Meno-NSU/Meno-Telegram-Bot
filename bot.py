@@ -51,7 +51,12 @@ async def get_backend_response(payload: dict, session: aiohttp.ClientSession) ->
 
 
 async def start_handler(message: types.Message):
-    await message.answer("Привет! Я чат-бот на основе LightRAG. Напиши мне что-нибудь.")
+    await message.answer(
+        """Привет, меня зовут Менон, я виртуальный помощник Новосибирского Государственного Университета!
+        Мои разработчики попросили сообщить вам следующее:
+        Данная нейронная сеть предназначена для предоставления информации и ответов на вопросы, касаемых Новосибирского Государственного Университета. 
+Однако, она может генерировать ответы, которые могут быть восприняты как оскорбительные, дискриминационные или неподобающие. Пользователь обязан самостоятельно оценивать и фильтровать как вводные, так и полученные данные. 
+Команда разработчиков не несет ответственности за любые последствия, возникшие в результате использования данной нейронной сети, включая, но не ограничиваясь, моральный ущерб, дискриминацию или нарушение прав третьих лиц.""")
 
 
 async def process_backend(message: types.Message, session: aiohttp.ClientSession, msg_to_edit: types.Message, bot: Bot):
@@ -69,7 +74,6 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
         await msg_to_edit.edit_text(random_phrase("fallback"))
     finally:
         pending_users.discard(user_id)  # всегда разблокируем
-
 
 
 async def message_handler(message: types.Message, session: aiohttp.ClientSession, bot: Bot):
@@ -94,6 +98,21 @@ async def message_handler(message: types.Message, session: aiohttp.ClientSession
         pending_users.discard(user_id)  # если что-то сломалось — разблокируем
 
 
+async def clear_history_handler(message: types.Message, session: aiohttp.ClientSession):
+    reset_url = settings.backend_api_url.replace("/chat", "/clear_history")
+    payload = {"chat_id": message.chat.id}
+
+    try:
+        async with session.post(reset_url, json=payload) as response:
+            if response.status == 200:
+                await message.answer("🧹Начнём с чистого листа, я всё забыл! 😶‍🌫️")
+            else:
+                await message.answer(f"Ой-ой, что-то пошло не так, скоро меня починят😖")
+    except Exception as e:
+        logging.exception("Ошибка при очистке истории:")
+        await message.answer("Ой-ой, что-то пошло не так, скоро меня починят😖")
+
+
 async def main():
     load_phrases()
 
@@ -104,6 +123,7 @@ async def main():
 
     # Регистрация хендлеров
     router.message.register(start_handler, Command("start"))
+    router.message.register(partial(clear_history_handler, session=session), Command("clear_history"))
     router.message.register(partial(message_handler, session=session, bot=bot), F.text)
 
     dp.include_router(router)
