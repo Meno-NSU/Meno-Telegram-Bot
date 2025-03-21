@@ -72,10 +72,10 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
         logging.info(f"Отправка запроса на бэкенд с payload: {payload}")
         reply = await get_backend_response(payload, session)
-        await msg_to_edit.edit_text(reply, parse_mode="MarkdownV2")
+        await msg_to_edit.edit_text(escape_markdown_v2(reply), parse_mode="MarkdownV2")
     except Exception as e:
         logging.error(f"Ошибка при обработке запроса: {e}")
-        await msg_to_edit.edit_text(random_phrase("fallback"), parse_mode="MarkdownV2")
+        await msg_to_edit.edit_text(escape_markdown_v2(random_phrase("fallback")), parse_mode="MarkdownV2")
     finally:
         pending_users.discard(user_id)  # всегда разблокируем
 
@@ -90,6 +90,7 @@ async def keep_typing(bot: Bot, chat_id: int):
             await asyncio.sleep(1)
     except asyncio.CancelledError:
         pass
+
 
 async def message_handler(message: types.Message, session: aiohttp.ClientSession, bot: Bot):
     user_id = message.from_user.id
@@ -139,6 +140,11 @@ async def info_handler(message: types.Message):
         "Иногда я могу генерировать ответы, которые могут быть восприняты как оскорбительные, дискриминационные или неподобающие. Пользователь обязан самостоятельно оценивать и фильтровать как вводные, так и полученные данные. "
         "Команда разработчиков не несёт ответственности за любые последствия, возникшие в результате использования данной нейронной сети, включая, но не ограничиваясь, моральный ущерб, дискриминацию или нарушение прав третьих лиц."
     )
+
+
+def escape_markdown_v2(text: str) -> str:
+    escape_chars = r"\_*[]()~`>#+-=|{}.!"
+    return ''.join(f'\\{c}' if c in escape_chars else c for c in text)
 
 
 async def main():
