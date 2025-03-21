@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 router = Router()
 pending_users = set()
 last_typing_times = defaultdict(lambda: 0)
-TYPING_INTERVAL = 4
+TYPING_INTERVAL = 2
 
 # Глобально загружаем фразы из JSON
 PHRASES = {
