@@ -144,8 +144,12 @@ async def info_handler(message: types.Message):
 
 
 def escape_markdown_v2(text: str) -> str:
-    escape_chars = r"\_*[]()~`>#+-=|{}.!"
-    return ''.join(f'\\{c}' if c in escape_chars else c for c in text)
+    """
+    Экранирует спецсимволы MarkdownV2 согласно Telegram Bot API:
+    https://core.telegram.org/bots/api#markdownv2-style
+    """
+    escape_chars = r"_*[]()~`>#+-=|{}.!"
+    return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
 
 
 def convert_double_to_single_stars(text: str) -> str:
