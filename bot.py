@@ -67,7 +67,7 @@ async def start_handler(message: types.Message):
 
 async def process_backend(message: types.Message, session: aiohttp.ClientSession, msg_to_edit: types.Message, bot: Bot):
     user_id = message.from_user.id
-    payload = {"chat_id": message.chat.id, "message": message.text}
+    payload = {"chat_id": str(message.chat.id), "message": message.text}
 
     try:
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
@@ -125,7 +125,7 @@ async def message_handler(message: types.Message, session: aiohttp.ClientSession
 
 async def clear_history_handler(message: types.Message, session: aiohttp.ClientSession):
     reset_url = settings.backend_api_url.replace("/chat", "/clear_history")
-    payload = {"chat_id": message.chat.id}
+    payload = {"chat_id": str(message.chat.id)}
 
     try:
         async with session.post(reset_url, json=payload) as response:
