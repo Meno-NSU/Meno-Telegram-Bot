@@ -75,7 +75,7 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
         reply = await get_backend_response(payload, session)
         logging.warning(f"Ответ бэкенда: {repr(reply)}")
         try:
-            await msg_to_edit.edit_text(reply, parse_mode="MarkdownV2")
+            await msg_to_edit.edit_text(reply, parse_mode="Markdown")
             # await msg_to_edit.edit_text(reply, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Ошибка форматирования MarkdownV2: {e}")
