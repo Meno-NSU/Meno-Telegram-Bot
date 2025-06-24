@@ -162,11 +162,11 @@ def escape_markdown_v2(text: str) -> str:
 
 def convert_double_to_single_stars(text: str) -> str:
     # "**текст**" → "*текст*"
-    return re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
+    return text.replace("**", "*")
 
 
 def prepare_for_markdown_v2(text: str) -> str:
-    return escape_markdown_v2(text)
+    return escape_markdown_v2(convert_double_to_single_stars(text))
 
 
 @router.message(F.sticker)
