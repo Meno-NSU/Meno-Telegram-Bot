@@ -17,6 +17,7 @@ from aiohttp import ClientTimeout
 from config import settings
 
 logging.basicConfig(level=logging.INFO)
+ESCAPE_CHARS_RE = re.compile(r"([\[\]()~`>#+\-=|{}.!])")
 router = Router()
 pending_users = set()
 last_typing_times = defaultdict(lambda: 0)
@@ -75,7 +76,7 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
         reply = await get_backend_response(payload, session)
         logging.warning(f"Ответ бэкенда: {repr(reply)}")
         try:
-            await msg_to_edit.edit_text(reply, parse_mode="Markdown")
+            await msg_to_edit.edit_text(prepare_for_markdown_v2(reply), parse_mode="MarkdownV2")
             # await msg_to_edit.edit_text(reply, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Ошибка форматирования MarkdownV2: {e}")
@@ -154,8 +155,9 @@ def escape_markdown_v2(text: str) -> str:
     Экранирует спецсимволы MarkdownV2 согласно Telegram Bot API:
     https://core.telegram.org/bots/api#markdownv2-style
     """
-    escape_chars = r"_*[]()~`>#+-=|{}.!\\"
-    return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
+    # escape_chars = r"_*[]()~`>#+-=|{}.!\\"
+    # return re.sub(f"([{ESCAPE_CHARS_RE.escape(escape_chars)}])", r"\\\1", text)
+    return ESCAPE_CHARS_RE.sub(r"\\\1", text)
 
 
 def convert_double_to_single_stars(text: str) -> str:
@@ -164,7 +166,7 @@ def convert_double_to_single_stars(text: str) -> str:
 
 
 def prepare_for_markdown_v2(text: str) -> str:
-    return escape_markdown_v2(convert_double_to_single_stars(text))
+    return escape_markdown_v2(text)
 
 
 @router.message(F.sticker)
