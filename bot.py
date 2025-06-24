@@ -17,7 +17,7 @@ from aiohttp import ClientTimeout
 from config import settings
 
 logging.basicConfig(level=logging.INFO)
-ESCAPE_CHARS_RE = re.compile(r"([\[\]()~`>#+\-=|{}.!])")
+ESCAPE_CHARS_RE = re.compile(r"([\[\]()~>#+\-=|{}.!])")
 router = Router()
 pending_users = set()
 last_typing_times = defaultdict(lambda: 0)
@@ -162,9 +162,7 @@ def escape_markdown_v2(text: str) -> str:
 
 def convert_double_to_single_stars(text: str) -> str:
     # "**текст**" → "*текст*"
-    print("old:", text)
     new = text.replace("**", "*")
-    print("new:", new)
     return new
 
 
