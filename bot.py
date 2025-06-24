@@ -162,7 +162,10 @@ def escape_markdown_v2(text: str) -> str:
 
 def convert_double_to_single_stars(text: str) -> str:
     # "**текст**" → "*текст*"
-    return text.replace("**", "*")
+    print("old:", text)
+    new = text.replace("**", "*")
+    print("new:", new)
+    return new
 
 
 def prepare_for_markdown_v2(text: str) -> str:
