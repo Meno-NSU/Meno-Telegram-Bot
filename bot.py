@@ -7,20 +7,24 @@ import re
 import time
 from collections import defaultdict
 from functools import partial
+import traceback
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command
 from aiogram.types import BotCommand
 from aiohttp import ClientTimeout
+import markdown
 
+from md_remove_tags import TagConversionExtension  # noqa: F401
 from config import settings
 
 logging.basicConfig(level=logging.INFO)
-ESCAPE_CHARS_RE = re.compile(r"([\[\]()~>#+\-=|{}.!])")
 router = Router()
 pending_users = set()
 last_typing_times = defaultdict(lambda: 0)
+md = markdown.Markdown(extensions=["fenced_code", TagConversionExtension()])
+md.stripTopLevelTags = False
 TYPING_INTERVAL = 4
 
 # Глобально загружаем фразы из JSON
@@ -74,12 +78,14 @@ async def process_backend(message: types.Message, session: aiohttp.ClientSession
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
         logging.info(f"Отправка запроса на бэкенд с payload: {payload}")
         reply = await get_backend_response(payload, session)
+        reply = prepare_for_html(reply)
         logging.warning(f"Ответ бэкенда: {repr(reply)}")
         try:
-            await msg_to_edit.edit_text(prepare_for_markdown_v2(reply), parse_mode="MarkdownV2")
+            await msg_to_edit.edit_text(reply, parse_mode="HTML")
             # await msg_to_edit.edit_text(reply, parse_mode="Markdown")
         except Exception as e:
-            logging.error(f"Ошибка форматирования MarkdownV2: {e}")
+            logging.error(f"Ошибка форматирования HTML: {e}")
+            print(traceback.format_exc())
             await msg_to_edit.edit_text(reply)
     except Exception as e:
         logging.error(f"Ошибка при обработке запроса: {e}")
@@ -150,24 +156,10 @@ async def info_handler(message: types.Message):
     )
 
 
-def escape_markdown_v2(text: str) -> str:
-    """
-    Экранирует спецсимволы MarkdownV2 согласно Telegram Bot API:
-    https://core.telegram.org/bots/api#markdownv2-style
-    """
-    # escape_chars = r"_*[]()~`>#+-=|{}.!\\"
-    # return re.sub(f"([{ESCAPE_CHARS_RE.escape(escape_chars)}])", r"\\\1", text)
-    return ESCAPE_CHARS_RE.sub(r"\\\1", text)
+def prepare_for_html(text: str) -> str:
+    html = md.convert(text)[4:-5]
 
-
-def convert_double_to_single_stars(text: str) -> str:
-    # "**текст**" → "*текст*"
-    new = text.replace("**", "*")
-    return new
-
-
-def prepare_for_markdown_v2(text: str) -> str:
-    return escape_markdown_v2(convert_double_to_single_stars(text))
+    return html
 
 
 @router.message(F.sticker)
