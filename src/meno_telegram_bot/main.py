@@ -6,6 +6,7 @@ import random
 import re
 import time
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from functools import partial
 
 import aiohttp
@@ -14,13 +15,17 @@ from aiogram.filters import Command
 from aiogram.types import BotCommand
 from aiohttp import ClientTimeout
 
-from config import settings
+from src.meno_telegram_bot.settings import settings
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
 pending_users = set()
+
 last_typing_times = defaultdict(lambda: 0)
 TYPING_INTERVAL = 4
+
+last_edit_times = defaultdict(lambda: 0.0)
+MIN_EDIT_INTERVAL = 0.8
 
 # Глобально загружаем фразы из JSON
 PHRASES = {
@@ -42,7 +47,29 @@ def random_phrase(category: str) -> str:
     return random.choice(PHRASES.get(category, ["..."]))
 
 
+def escape_markdown_v2(text: str) -> str:
+    """
+    Экранирует спецсимволы MarkdownV2 согласно Telegram Bot API:
+    https://core.telegram.org/bots/api#markdownv2-style
+    """
+    escape_chars = r"_*[]()~`>#+-=|{}.!\\"
+    return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
+
+
+def convert_double_to_single_stars(text: str) -> str:
+    # "**текст**" → "*текст*"
+    return re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
+
+
+def prepare_for_markdown_v2(text: str) -> str:
+    return escape_markdown_v2(convert_double_to_single_stars(text))
+
+
 async def get_backend_response(payload: dict, session: aiohttp.ClientSession) -> str:
+    """
+    Нестриминговый запрос — оставляем как фоллбэк на случай,
+    если стриминговый endpoint недоступен / упал.
+    """
     try:
         async with session.post(settings.backend_api_url, json=payload) as response:
             if response.status == 200:
@@ -50,39 +77,140 @@ async def get_backend_response(payload: dict, session: aiohttp.ClientSession) ->
                 return data.get("response", random_phrase("fallback"))
             else:
                 return f"Ошибка API: {response.status}"
-    except Exception as e:
-        logging.exception("Ошибка при запросе к backend:")
+    except Exception:
+        logging.exception("Ошибка при запросе к backend (non-stream):")
         return random_phrase("fallback")
+
+
+async def stream_backend_response(
+        payload: dict,
+        session: aiohttp.ClientSession,
+) -> AsyncIterator[str]:
+    """
+    Стриминговый запрос к backend.
+
+    Предполагается, что backend:
+    - по POST settings.backend_api_url с params={"stream": "true"}
+    - возвращает HTTP-стрим (chunked) с plain text (без JSON),
+      каждый chunk — продолжение ответа.
+
+    Если backend отдаёт JSON-чанки — лучше преобразовать их на backend-е
+    в чистый текст и уже его стримить.
+    """
+    try:
+        async with session.post(
+                settings.backend_api_url,
+                json=payload,
+                params={"stream": "true"},
+                timeout=None,
+        ) as response:
+            if response.status != 200:
+                logging.error(f"Stream backend error status: {response.status}")
+                return
+
+            async for chunk in response.content.iter_any():
+                if not chunk:
+                    continue
+                try:
+                    text_piece = chunk.decode("utf-8", errors="ignore")
+                except Exception as e:
+                    logging.warning(f"Ошибка декодирования чанка: {e}")
+                    continue
+
+                if text_piece.strip() == "[DONE]":
+                    break
+
+                yield text_piece
+
+    except Exception:
+        logging.exception("Ошибка при стриминговом запросе к backend:")
+        return
 
 
 async def start_handler(message: types.Message):
     await message.answer(
         """Привет, меня зовут Менон! Я виртуальный помощник Новосибирского Государственного Университета!
 Мои разработчики попросили сообщить вам следующее, прежде чем вы начнёте мной пользоваться:
-        
+
 Данная нейронная сеть предназначена для предоставления информации и ответов на вопросы, касаемых Новосибирского Государственного Университета. 
 Однако, она может генерировать ответы, которые могут быть восприняты как оскорбительные, дискриминационные или неподобающие. Пользователь обязан самостоятельно оценивать и фильтровать как вводные, так и полученные данные. 
-Команда разработчиков не несет ответственности за любые последствия, возникшие в результате использования данной нейронной сети, включая, но не ограничиваясь, моральный ущерб, дискриминацию или нарушение прав третьих лиц.""")
+Команда разработчиков не несет ответственности за любые последствия, возникшие в результате использования данной нейронной сети, включая, но не ограничиваясь, моральный ущерб, дискриминацию или нарушение прав третьих лиц."""
+    )
 
 
-async def process_backend(message: types.Message, session: aiohttp.ClientSession, msg_to_edit: types.Message, bot: Bot):
+async def process_backend(
+        message: types.Message,
+        session: aiohttp.ClientSession,
+        msg_to_edit: types.Message,
+        bot: Bot,
+):
+    """
+    Основная логика:
+    - пробуем стрим с backend-а;
+    - по мере прихода чанков обновляем сообщение edit_text с учётом rate-limit;
+    - если стрим не удался или ответ пустой — фоллбэк на обычный запрос.
+    """
     user_id = message.from_user.id
-    payload = {"chat_id": str(message.chat.id), "message": message.text}
+    chat_id = message.chat.id
+    payload = {"chat_id": str(chat_id), "message": message.text}
+
+    raw_answer = ""  # накапливаем сырой ответ без Markdown-экранирования
 
     try:
-        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-        logging.info(f"Отправка запроса на бэкенд с payload: {payload}")
-        reply = await get_backend_response(payload, session)
-        logging.warning(f"Ответ бэкенда: {repr(reply)}")
+        await bot.send_chat_action(chat_id=chat_id, action="typing")
+        logging.info(f"Отправка стримингового запроса на backend с payload: {payload}")
+
+        # 1. Попытка стриминга
+        async for piece in stream_backend_response(payload, session):
+            if not piece:
+                continue
+
+            raw_answer += piece
+
+            now = time.time()
+            last_edit = last_edit_times[chat_id]
+
+            # Обновляем сообщение не чаще, чем раз в MIN_EDIT_INTERVAL
+            if now - last_edit >= MIN_EDIT_INTERVAL:
+                last_edit_times[chat_id] = now
+                try:
+                    prepared = prepare_for_markdown_v2(raw_answer)
+                    await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
+                except Exception as e:
+                    logging.error(f"Ошибка форматирования / edit_text в стриме: {e}")
+                    # можно попробовать без Markdown
+                    try:
+                        await msg_to_edit.edit_text(raw_answer)
+                    except Exception as e2:
+                        logging.error(f"Не удалось обновить сообщение без Markdown: {e2}")
+
+        # 2. Стрим закончился. Если ничего не пришло — пробуем обычный запрос
+        if not raw_answer.strip():
+            logging.info("Стриминговый ответ пустой, делаем non-stream запрос")
+            reply = await get_backend_response(payload, session)
+            logging.warning(f"Non-stream ответ backend: {repr(reply)}")
+            try:
+                prepared = prepare_for_markdown_v2(reply)
+                await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
+            except Exception as e:
+                logging.error(f"Ошибка форматирования MarkdownV2 (fallback): {e}")
+                await msg_to_edit.edit_text(reply)
+            return
+
+        # 3. Финальный апдейт (на случай, если последний кусок не успели отрисовать)
         try:
-            await msg_to_edit.edit_text(prepare_for_markdown_v2(reply), parse_mode="MarkdownV2")
-            # await msg_to_edit.edit_text(reply, parse_mode="Markdown")
+            prepared = prepare_for_markdown_v2(raw_answer)
+            await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
         except Exception as e:
-            logging.error(f"Ошибка форматирования MarkdownV2: {e}")
-            await msg_to_edit.edit_text(reply)
+            logging.error(f"Ошибка финального форматирования MarkdownV2: {e}")
+            await msg_to_edit.edit_text(raw_answer)
+
     except Exception as e:
         logging.error(f"Ошибка при обработке запроса: {e}")
-        await msg_to_edit.edit_text(random_phrase("fallback"))
+        try:
+            await msg_to_edit.edit_text(random_phrase("fallback"))
+        except Exception:
+            logging.exception("Не удалось отправить fallback-сообщение")
     finally:
         pending_users.discard(user_id)
 
@@ -99,8 +227,13 @@ async def keep_typing(bot: Bot, chat_id: int):
         pass
 
 
-async def message_handler(message: types.Message, session: aiohttp.ClientSession, bot: Bot):
+async def message_handler(
+        message: types.Message,
+        session: aiohttp.ClientSession,
+        bot: Bot,
+):
     user_id = message.from_user.id
+    chat_id = message.chat.id
 
     if user_id in pending_users:
         await message.answer("⏳ Пожалуйста, дождитесь ответа на предыдущий запрос.")
@@ -110,8 +243,9 @@ async def message_handler(message: types.Message, session: aiohttp.ClientSession
 
     thinking_msg = await message.answer(random_phrase("thinking"))
 
-    typing_task = asyncio.create_task(keep_typing(bot, message.chat.id))
+    typing_task = asyncio.create_task(keep_typing(bot, chat_id))
     backend_task = asyncio.create_task(process_backend(message, session, thinking_msg, bot))
+
     try:
         await backend_task
     except Exception as e:
@@ -132,8 +266,8 @@ async def clear_history_handler(message: types.Message, session: aiohttp.ClientS
             if response.status == 200:
                 await message.answer("🧹Начнём с чистого листа, я всё забыл! 😶‍🌫️")
             else:
-                await message.answer(f"Ой-ой, что-то пошло не так, скоро меня починят😖")
-    except Exception as e:
+                await message.answer("Ой-ой, что-то пошло не так, скоро меня починят😖")
+    except Exception:
         logging.exception("Ошибка при очистке истории:")
         await message.answer("Ой-ой, что-то пошло не так, скоро меня починят😖")
 
@@ -149,24 +283,6 @@ async def info_handler(message: types.Message):
     )
 
 
-def escape_markdown_v2(text: str) -> str:
-    """
-    Экранирует спецсимволы MarkdownV2 согласно Telegram Bot API:
-    https://core.telegram.org/bots/api#markdownv2-style
-    """
-    escape_chars = r"_*[]()~`>#+-=|{}.!\\"
-    return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
-
-
-def convert_double_to_single_stars(text: str) -> str:
-    # "**текст**" → "*текст*"
-    return re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
-
-
-def prepare_for_markdown_v2(text: str) -> str:
-    return escape_markdown_v2(convert_double_to_single_stars(text))
-
-
 @router.message(F.sticker)
 async def handle_sticker(message: types.Message):
     await message.answer("🧸 Стикеры — это весело, но я умею только читать текст. Спросите меня что-нибудь текстом!")
@@ -175,7 +291,8 @@ async def handle_sticker(message: types.Message):
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
     await message.answer(
-        "📸 Картинки — это замечательно! Но я пока не понимаю изображения. Попробуйте написать мне вопрос текстом!")
+        "📸 Картинки — это замечательно! Но я пока не понимаю изображения. Попробуйте написать мне вопрос текстом!"
+    )
 
 
 @router.message(F.video)
@@ -201,7 +318,8 @@ async def handle_audio(message: types.Message):
 @router.message(F.document)
 async def handle_document(message: types.Message):
     await message.answer(
-        "📄 Файлы — это важно, но пока что я умею работать только с текстом. Спросите меня что-нибудь интересное!")
+        "📄 Файлы — это важно, но пока что я умею работать только с текстом. Спросите меня что-нибудь интересное!"
+    )
 
 
 @router.message(F.animation)
@@ -222,7 +340,8 @@ async def handle_location(message: types.Message):
 @router.message(~F.text)
 async def handle_unknown(message: types.Message):
     await message.answer(
-        "🤷 К сожалению, я пока умею понимать только текст. Напишите мне словами, и я постараюсь помочь!")
+        "🤷 К сожалению, я пока умею понимать только текст. Напишите мне словами, и я постараюсь помочь!"
+    )
 
 
 async def main():
@@ -233,32 +352,26 @@ async def main():
     timeout = ClientTimeout(total=100)
     session = aiohttp.ClientSession(timeout=timeout)
 
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Запуск бота"),
-        BotCommand(command="clear_history", description="Очистить историю диалога"),
-        BotCommand(command="info", description="Информация о боте"),
-        # BotCommand(command="about_us", description="Информация о разработчиках"),
-    ])
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Запуск бота"),
+            BotCommand(command="clear_history", description="Очистить историю диалога"),
+            BotCommand(command="info", description="Информация о боте"),
+        ]
+    )
 
-    # Регистрация хендлеров
     router.message.register(start_handler, Command("start"))
-    router.message.register(partial(clear_history_handler, session=session), Command("clear_history"))
+    router.message.register(
+        partial(clear_history_handler, session=session),
+        Command("clear_history"),
+    )
     router.message.register(partial(info_handler), Command("info"))
-    router.message.register(partial(message_handler, session=session, bot=bot), F.text)
+    router.message.register(
+        partial(message_handler, session=session, bot=bot),
+        F.text,
+    )
 
-    router.message.register(handle_sticker, F.sticker)
-    router.message.register(handle_photo, F.photo)
-    router.message.register(handle_video, F.video)
-    router.message.register(handle_voice, F.voice)
-    router.message.register(handle_video_note, F.video_note)
-    router.message.register(handle_audio, F.audio)
-    router.message.register(handle_animation, F.animation)
-    router.message.register(handle_contact, F.contact)
-    router.message.register(handle_location, F.location)
-    router.message.register(handle_document, F.document)
-
-    # Fallback: всё остальное, что не текст
-    router.message.register(handle_unknown, ~F.text)
+    # Остальные хэндлеры уже зарегистрированы декораторами
     dp.include_router(router)
 
     logging.info("Бот запущен")

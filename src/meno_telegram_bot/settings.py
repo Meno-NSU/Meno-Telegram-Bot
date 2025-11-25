@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     backend_api_url: str = "http://localhost:8000/chat"
 
     class Config:
-        env_file = ".env"
+        env_file: str = ".env"
 
 
 settings = Settings()
