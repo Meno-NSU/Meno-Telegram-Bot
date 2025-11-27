@@ -27,6 +27,9 @@ TYPING_INTERVAL = 4
 last_edit_times = defaultdict(lambda: 0.0)
 MIN_EDIT_INTERVAL = 0.8
 
+dialog_histories = defaultdict(list)
+MAX_HISTORY_MESSAGES = 12
+
 # Глобально загружаем фразы из JSON
 PHRASES = {
     "thinking": ["Печатаю ответ..."],
@@ -67,16 +70,28 @@ def prepare_for_markdown_v2(text: str) -> str:
 
 async def get_backend_response(payload: dict, session: aiohttp.ClientSession) -> str:
     """
-    Нестриминговый запрос — оставляем как фоллбэк на случай,
-    если стриминговый endpoint недоступен / упал.
+    Нестриминговый запрос — OpenAI-совместимый /v1/chat/completions.
     """
+    payload = {**payload, "stream": False}
+
     try:
         async with session.post(settings.backend_api_url, json=payload) as response:
-            if response.status == 200:
-                data = await response.json()
-                return data.get("response", random_phrase("fallback"))
-            else:
+            if response.status != 200:
                 return f"Ошибка API: {response.status}"
+
+            data = await response.json()
+            try:
+                choices = data.get("choices") or []
+                if not choices:
+                    return random_phrase("fallback")
+                msg = choices[0].get("message") or {}
+                content = msg.get("content")
+                if not content:
+                    return random_phrase("fallback")
+                return content
+            except Exception as e:
+                logging.error(f"Ошибка разбора OpenAI-ответа: {e}")
+                return random_phrase("fallback")
     except Exception:
         logging.exception("Ошибка при запросе к backend (non-stream):")
         return random_phrase("fallback")
@@ -97,6 +112,7 @@ async def stream_backend_response(
     Если backend отдаёт JSON-чанки — лучше преобразовать их на backend-е
     в чистый текст и уже его стримить.
     """
+    payload = {**payload, "stream": True}
     try:
         async with session.post(
                 settings.backend_api_url,
@@ -107,20 +123,51 @@ async def stream_backend_response(
             if response.status != 200:
                 logging.error(f"Stream backend error status: {response.status}")
                 return
+            buffer = ""
 
             async for chunk in response.content.iter_any():
                 if not chunk:
                     continue
                 try:
-                    text_piece = chunk.decode("utf-8", errors="ignore")
+                    buffer += chunk.decode("utf-8", errors="ignore")
                 except Exception as e:
                     logging.warning(f"Ошибка декодирования чанка: {e}")
                     continue
 
-                if text_piece.strip() == "[DONE]":
-                    break
+                while "\n\n" in buffer:
+                    event, buffer = buffer.split("\n\n", 1)
+                    lines = event.splitlines()
 
-                yield text_piece
+                    for line in lines:
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+
+                        if not data_str:
+                            continue
+
+                        if data_str == "[DONE]":
+                            return
+
+                        # пробуем распарсить JSON чанка
+                        try:
+                            obj = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            logging.warning(f"Не удалось распарсить JSON из SSE: {data_str!r}")
+                            continue
+
+                        # формат как у OpenAI: choices[0].delta.content
+                        try:
+                            choices = obj.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta") or {}
+                            piece = delta.get("content")
+                            if piece:
+                                yield piece
+                        except Exception as e:
+                            logging.warning(f"Проблема при разборе SSE чанка: {e}")
+                            continue
 
     except Exception:
         logging.exception("Ошибка при стриминговом запросе к backend:")
@@ -144,23 +191,27 @@ async def process_backend(
         msg_to_edit: types.Message,
         bot: Bot,
 ):
-    """
-    Основная логика:
-    - пробуем стрим с backend-а;
-    - по мере прихода чанков обновляем сообщение edit_text с учётом rate-limit;
-    - если стрим не удался или ответ пустой — фоллбэк на обычный запрос.
-    """
     user_id = message.from_user.id
     chat_id = message.chat.id
-    payload = {"chat_id": str(chat_id), "message": message.text}
 
-    raw_answer = ""  # накапливаем сырой ответ без Markdown-экранирования
+    history = dialog_histories[chat_id]
+    history.append({"role": "user", "content": message.text})
+    messages = history[-MAX_HISTORY_MESSAGES:]
+
+    payload = {
+        "model": "menon-1",
+        "messages": messages,
+        "stream": True,
+        "user": str(chat_id),
+    }
+
+    raw_answer = ""
+    final_answer = None
 
     try:
         await bot.send_chat_action(chat_id=chat_id, action="typing")
         logging.info(f"Отправка стримингового запроса на backend с payload: {payload}")
 
-        # 1. Попытка стриминга
         async for piece in stream_backend_response(payload, session):
             if not piece:
                 continue
@@ -170,7 +221,6 @@ async def process_backend(
             now = time.time()
             last_edit = last_edit_times[chat_id]
 
-            # Обновляем сообщение не чаще, чем раз в MIN_EDIT_INTERVAL
             if now - last_edit >= MIN_EDIT_INTERVAL:
                 last_edit_times[chat_id] = now
                 try:
@@ -178,41 +228,46 @@ async def process_backend(
                     await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
                 except Exception as e:
                     logging.error(f"Ошибка форматирования / edit_text в стриме: {e}")
-                    # можно попробовать без Markdown
                     try:
                         await msg_to_edit.edit_text(raw_answer)
                     except Exception as e2:
                         logging.error(f"Не удалось обновить сообщение без Markdown: {e2}")
 
-        # 2. Стрим закончился. Если ничего не пришло — пробуем обычный запрос
         if not raw_answer.strip():
             logging.info("Стриминговый ответ пустой, делаем non-stream запрос")
             reply = await get_backend_response(payload, session)
             logging.warning(f"Non-stream ответ backend: {repr(reply)}")
+            final_answer = reply
             try:
                 prepared = prepare_for_markdown_v2(reply)
                 await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
             except Exception as e:
                 logging.error(f"Ошибка форматирования MarkdownV2 (fallback): {e}")
                 await msg_to_edit.edit_text(reply)
-            return
-
-        # 3. Финальный апдейт (на случай, если последний кусок не успели отрисовать)
-        try:
-            prepared = prepare_for_markdown_v2(raw_answer)
-            await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
-        except Exception as e:
-            logging.error(f"Ошибка финального форматирования MarkdownV2: {e}")
-            await msg_to_edit.edit_text(raw_answer)
+        else:
+            final_answer = raw_answer
+            try:
+                prepared = prepare_for_markdown_v2(raw_answer)
+                await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
+            except Exception as e:
+                logging.error(f"Ошибка финального форматирования MarkdownV2: {e}")
+                await msg_to_edit.edit_text(raw_answer)
 
     except Exception as e:
         logging.error(f"Ошибка при обработке запроса: {e}")
         try:
-            await msg_to_edit.edit_text(random_phrase("fallback"))
+            fallback = random_phrase("fallback")
+            final_answer = final_answer or fallback
+            await msg_to_edit.edit_text(fallback)
         except Exception:
             logging.exception("Не удалось отправить fallback-сообщение")
     finally:
         pending_users.discard(user_id)
+
+        if final_answer:
+            history.append({"role": "assistant", "content": final_answer})
+            if len(history) > 2 * MAX_HISTORY_MESSAGES:
+                dialog_histories[chat_id] = history[-2 * MAX_HISTORY_MESSAGES:]
 
 
 async def keep_typing(bot: Bot, chat_id: int):
@@ -258,8 +313,11 @@ async def message_handler(
 
 
 async def clear_history_handler(message: types.Message, session: aiohttp.ClientSession):
-    reset_url = settings.backend_api_url.replace("/chat", "/clear_history")
-    payload = {"chat_id": str(message.chat.id)}
+    chat_id = message.chat.id
+    dialog_histories.pop(chat_id, None)
+
+    reset_url = f"{settings.backend_base_url}/clear_history"
+    payload = {"chat_id": str(chat_id)}
 
     try:
         async with session.post(reset_url, json=payload) as response:
