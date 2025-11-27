@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="forbid",
+        extra="ignore",
         case_sensitive=True,
         populate_by_name=True,
     )
@@ -14,4 +14,4 @@ class Settings(BaseSettings):
     backend_api_url: AnyHttpUrl = Field(alias="BACKEND_BASE_URL")
 
 
-settings: Settings = Settings()
+settings: Settings = Settings()  # type: ignore[call-arg]
