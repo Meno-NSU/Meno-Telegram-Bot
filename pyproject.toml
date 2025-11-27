@@ -19,3 +19,14 @@ meno-telegram-bot = "meno_telegram_bot.bot:main"
 [build-system]
 requires = ["uv_build>=0.9.11,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "mypy",
+    "build",
+    "pre-commit",
+]
