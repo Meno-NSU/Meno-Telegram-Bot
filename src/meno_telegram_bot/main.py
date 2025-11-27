@@ -12,7 +12,7 @@ from functools import partial
 import aiohttp
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, User
 from aiohttp import ClientTimeout
 
 from meno_telegram_bot.settings import settings
@@ -21,14 +21,16 @@ logging.basicConfig(level=logging.INFO)
 router = Router()
 pending_users = set()
 
-last_typing_times = defaultdict(lambda: 0)
+# FIXME: Bad id
+last_typing_times: defaultdict[int, float] = defaultdict(lambda: 0)
 TYPING_INTERVAL = 4
 
 last_edit_times = defaultdict(lambda: 0.0)
-MIN_EDIT_INTERVAL = 0.8
+MIN_EDIT_INTERVAL: float = 0.8
 
-dialog_histories = defaultdict(list)
-MAX_HISTORY_MESSAGES = 12
+# FIXME: Bad id
+dialog_histories: defaultdict[int, list] = defaultdict(list)
+MAX_HISTORY_MESSAGES: int = 12
 
 # Глобально загружаем фразы из JSON
 PHRASES = {
@@ -75,7 +77,7 @@ async def get_backend_response(payload: dict, session: aiohttp.ClientSession) ->
     payload = {**payload, "stream": False}
 
     try:
-        async with session.post(settings.backend_api_url, json=payload) as response:
+        async with session.post(str(settings.backend_api_url), json=payload) as response:
             if response.status != 200:
                 return f"Ошибка API: {response.status}"
 
@@ -115,7 +117,7 @@ async def stream_backend_response(
     payload = {**payload, "stream": True}
     try:
         async with session.post(
-                settings.backend_api_url,
+                str(settings.backend_api_url),
                 json=payload,
                 params={"stream": "true"},
                 timeout=None,
@@ -273,7 +275,7 @@ async def process_backend(
 async def keep_typing(bot: Bot, chat_id: int):
     try:
         while True:
-            now = time.time()
+            now: float = time.time()
             if now - last_typing_times[chat_id] >= TYPING_INTERVAL:
                 await bot.send_chat_action(chat_id=chat_id, action="typing")
                 last_typing_times[chat_id] = now
@@ -287,12 +289,20 @@ async def message_handler(
         session: aiohttp.ClientSession,
         bot: Bot,
 ):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
+    user: User | None = message.from_user
+    if not user:
+        logging.error("Message missing user or chat: %s", message)
+        return
+    user_id = getattr(user, "id", None)
+    if user_id is None:
+        logging.error("Message without id: %s", message)
+        return
 
     if user_id in pending_users:
         await message.answer("⏳ Пожалуйста, дождитесь ответа на предыдущий запрос.")
         return
+
+    chat_id = message.chat.id
 
     pending_users.add(user_id)
 
@@ -316,7 +326,7 @@ async def clear_history_handler(message: types.Message, session: aiohttp.ClientS
     chat_id = message.chat.id
     dialog_histories.pop(chat_id, None)
 
-    reset_url = f"{settings.backend_base_url}/clear_history"
+    reset_url = f"{settings.backend_api_url}/clear_history"
     payload = {"chat_id": str(chat_id)}
 
     try:
