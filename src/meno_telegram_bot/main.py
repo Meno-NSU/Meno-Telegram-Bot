@@ -39,8 +39,23 @@ PHRASES = {
     "fallback": ["Не удалось получить ответ."]
 }
 
+THINK_OPEN = "<think>"
+THINK_CLOSE = "</think>"
 
-def load_phrases(path: str = "phrases.json"):
+
+def strip_think_from_text(text: str) -> str:
+    if THINK_OPEN not in text:
+        return text
+
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+
+    if THINK_OPEN in cleaned:
+        cleaned = cleaned.split(THINK_OPEN, 1)[0]
+
+    return cleaned.strip()
+
+
+def load_phrases(path: str = "src/meno_telegram_bot/data/phrases.json"):
     global PHRASES
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -193,6 +208,7 @@ async def process_backend(
         session: aiohttp.ClientSession,
         msg_to_edit: types.Message,
         bot: Bot,
+        stop_event: asyncio.Event | None = None,
 ):
     user: User | None = message.from_user
     if not user:
@@ -216,7 +232,8 @@ async def process_backend(
     }
 
     raw_answer = ""
-    final_answer = None
+    final_answer: str | None = None
+    first_answer_sent = False
 
     try:
         await bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -228,18 +245,39 @@ async def process_backend(
 
             raw_answer += piece
 
+            visible_candidate: str | None = None
+            has_open = THINK_OPEN in raw_answer
+            has_close = THINK_CLOSE in raw_answer
+
+            if has_open and not has_close:
+                before_think = raw_answer.split(THINK_OPEN, 1)[0]
+                if before_think.strip():
+                    visible_candidate = before_think
+                else:
+                    continue
+            elif has_close:
+                cleaned = strip_think_from_text(raw_answer)
+                if not cleaned.strip():
+                    continue
+                visible_candidate = cleaned
+            else:
+                visible_candidate = raw_answer
+
             now = time.time()
             last_edit = last_edit_times[chat_id]
 
             if now - last_edit >= MIN_EDIT_INTERVAL:
                 last_edit_times[chat_id] = now
                 try:
-                    prepared = prepare_for_markdown_v2(raw_answer)
+                    if stop_event is not None and not first_answer_sent:
+                        stop_event.set()
+                        first_answer_sent = True
+                    prepared = prepare_for_markdown_v2(visible_candidate)
                     await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
                 except Exception as e:
                     logging.error(f"Ошибка форматирования / edit_text в стриме: {e}")
                     try:
-                        await msg_to_edit.edit_text(raw_answer)
+                        await msg_to_edit.edit_text(visible_candidate, parse_mode="MarkdownV2")
                     except Exception as e2:
                         logging.error(f"Не удалось обновить сообщение без Markdown: {e2}")
 
@@ -247,27 +285,39 @@ async def process_backend(
             logging.info("Стриминговый ответ пустой, делаем non-stream запрос")
             reply = await get_backend_response(payload, session)
             logging.warning(f"Non-stream ответ backend: {repr(reply)}")
-            final_answer = reply
+
+            reply_clean = strip_think_from_text(reply)
+            final_answer = reply_clean
+
+            if stop_event is not None and not stop_event.is_set():
+                stop_event.set()
+
             try:
-                prepared = prepare_for_markdown_v2(reply)
+                prepared = prepare_for_markdown_v2(reply_clean)
                 await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
             except Exception as e:
                 logging.error(f"Ошибка форматирования MarkdownV2 (fallback): {e}")
-                await msg_to_edit.edit_text(reply)
+                await msg_to_edit.edit_text(reply_clean)
         else:
-            final_answer = raw_answer
+            answer_clean = strip_think_from_text(raw_answer)
+            final_answer = answer_clean
+
+            if stop_event is not None and not stop_event.is_set():
+                stop_event.set()
             try:
-                prepared = prepare_for_markdown_v2(raw_answer)
+                prepared = prepare_for_markdown_v2(answer_clean)
                 await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
             except Exception as e:
                 logging.error(f"Ошибка финального форматирования MarkdownV2: {e}")
-                await msg_to_edit.edit_text(raw_answer)
+                await msg_to_edit.edit_text(answer_clean)
 
     except Exception as e:
         logging.error(f"Ошибка при обработке запроса: {e}")
         try:
             fallback = random_phrase("fallback")
             final_answer = final_answer or fallback
+            if stop_event is not None and not stop_event.is_set():
+                stop_event.set()
             await msg_to_edit.edit_text(fallback)
         except Exception:
             logging.exception("Не удалось отправить fallback-сообщение")
@@ -288,6 +338,24 @@ async def keep_typing(bot: Bot, chat_id: int):
                 await bot.send_chat_action(chat_id=chat_id, action="typing")
                 last_typing_times[chat_id] = now
             await asyncio.sleep(2)
+    except asyncio.CancelledError:
+        pass
+
+
+async def rotate_thinking_phrases(
+        msg: types.Message,
+        stop_event: asyncio.Event,
+        interval: float = 4.0,
+) -> None:
+    try:
+        while not stop_event.is_set():
+            await asyncio.sleep(interval)
+            if stop_event.is_set():
+                break
+            try:
+                await msg.edit_text(random_phrase("thinking"))
+            except Exception as e:
+                logging.debug(f"Не удалось обновить thinking-сообщение: {e}")
     except asyncio.CancelledError:
         pass
 
@@ -316,17 +384,24 @@ async def message_handler(
 
     thinking_msg = await message.answer(random_phrase("thinking"))
 
+    stop_event = asyncio.Event()
+
     typing_task = asyncio.create_task(keep_typing(bot, chat_id))
-    backend_task = asyncio.create_task(process_backend(message, session, thinking_msg, bot))
+    rotating_task = asyncio.create_task(rotate_thinking_phrases(thinking_msg, stop_event))
+    backend_task = asyncio.create_task(process_backend(message, session, thinking_msg, bot, stop_event))
 
     try:
         await backend_task
     except Exception as e:
         logging.error(f"Ошибка в message_handler: {e}")
     finally:
+        stop_event.set()
         typing_task.cancel()
+        rotating_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await typing_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await rotating_task
         pending_users.discard(user_id)
 
 
