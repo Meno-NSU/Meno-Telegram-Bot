@@ -1,12 +1,17 @@
-from pydantic_settings import BaseSettings
+from pydantic import Field, AnyHttpUrl
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    telegram_bot_token: str
-    backend_api_url: str = "http://localhost:8000/chat"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="forbid",
+        case_sensitive=True,
+        populate_by_name=True,
+    )
+    telegram_bot_token: str = Field(alias="TELEGRAM_BOT_TOKEN")
+    backend_api_url: AnyHttpUrl = Field(alias="BACKEND_BASE_URL")
 
-    class Config:
-        env_file: str = ".env"
 
-
-settings = Settings()
+settings: Settings = Settings()
