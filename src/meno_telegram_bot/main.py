@@ -25,7 +25,8 @@ pending_users = set()
 last_typing_times: defaultdict[int, float] = defaultdict(lambda: 0)
 TYPING_INTERVAL = 4
 
-last_edit_times = defaultdict(lambda: 0.0)
+# FIXME: Bad id
+last_edit_times: defaultdict[int, float] = defaultdict(lambda: 0.0)
 MIN_EDIT_INTERVAL: float = 0.8
 
 # FIXME: Bad id
@@ -193,7 +194,14 @@ async def process_backend(
         msg_to_edit: types.Message,
         bot: Bot,
 ):
-    user_id = message.from_user.id
+    user: User | None = message.from_user
+    if not user:
+        logging.error("Message missing user or chat: %s", message)
+        return
+    user_id = getattr(user, "id", None)
+    if user_id is None:
+        logging.error("Message without id: %s", message)
+        return
     chat_id = message.chat.id
 
     history = dialog_histories[chat_id]
