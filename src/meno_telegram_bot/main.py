@@ -15,7 +15,7 @@ from aiogram.filters import Command
 from aiogram.types import BotCommand
 from aiohttp import ClientTimeout
 
-from src.meno_telegram_bot.settings import settings
+from meno_telegram_bot.settings import settings
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
