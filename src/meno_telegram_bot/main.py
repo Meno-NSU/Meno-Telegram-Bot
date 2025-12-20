@@ -33,11 +33,12 @@ MIN_EDIT_INTERVAL: float = 0.8
 dialog_histories: defaultdict[int, list] = defaultdict(list)
 MAX_HISTORY_MESSAGES: int = 12
 
-# Глобально загружаем фразы из JSON
 PHRASES = {
     "thinking": ["Печатаю ответ..."],
     "fallback": ["Не удалось получить ответ."]
 }
+
+MESSAGES = {}
 
 THINK_OPEN = "<think>"
 THINK_CLOSE = "</think>"
@@ -64,6 +65,15 @@ def load_phrases(path: str = "src/meno_telegram_bot/data/phrases.json"):
         logging.warning(f"Не удалось загрузить фразы из {path}: {e}")
 
 
+def load_messages(path: str = "src/meno_telegram_bot/data/messages.json"):
+    global MESSAGES
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            MESSAGES = json.load(f)
+    except Exception as e:
+        logging.warning(f"Не удалось загрузить сообщения из {path}: {e}")
+
+
 def random_phrase(category: str) -> str:
     return random.choice(PHRASES.get(category, ["..."]))
 
@@ -78,7 +88,6 @@ def escape_markdown_v2(text: str) -> str:
 
 
 def convert_double_to_single_stars(text: str) -> str:
-    # "**текст**" → "*текст*"
     return re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
 
 
@@ -167,14 +176,12 @@ async def stream_backend_response(
                         if data_str == "[DONE]":
                             return
 
-                        # пробуем распарсить JSON чанка
                         try:
                             obj = json.loads(data_str)
                         except json.JSONDecodeError:
                             logging.warning(f"Не удалось распарсить JSON из SSE: {data_str!r}")
                             continue
 
-                        # формат как у OpenAI: choices[0].delta.content
                         try:
                             choices = obj.get("choices") or []
                             if not choices:
@@ -193,14 +200,7 @@ async def stream_backend_response(
 
 
 async def start_handler(message: types.Message):
-    await message.answer(
-        """Привет, меня зовут Менон! Я виртуальный помощник Новосибирского Государственного Университета!
-Мои разработчики попросили сообщить вам следующее, прежде чем вы начнёте мной пользоваться:
-
-Данная нейронная сеть предназначена для предоставления информации и ответов на вопросы, касаемых Новосибирского Государственного Университета. 
-Однако, она может генерировать ответы, которые могут быть восприняты как оскорбительные, дискриминационные или неподобающие. Пользователь обязан самостоятельно оценивать и фильтровать как вводные, так и полученные данные. 
-Команда разработчиков не несет ответственности за любые последствия, возникшие в результате использования данной нейронной сети, включая, но не ограничиваясь, моральный ущерб, дискриминацию или нарушение прав третьих лиц."""
-    )
+    await message.answer(MESSAGES.get("start_message", "Привет!"))
 
 
 async def process_backend(
@@ -375,7 +375,8 @@ async def message_handler(
         return
 
     if user_id in pending_users:
-        await message.answer("⏳ Пожалуйста, дождитесь ответа на предыдущий запрос.")
+        await message.answer(
+            MESSAGES.get("wait_previous_request", "⏳ Пожалуйста, дождитесь ответа на предыдущий запрос."))
         return
 
     chat_id = message.chat.id
@@ -415,88 +416,76 @@ async def clear_history_handler(message: types.Message, session: aiohttp.ClientS
     try:
         async with session.post(reset_url, json=payload) as response:
             if response.status == 200:
-                await message.answer("🧹Начнём с чистого листа, я всё забыл! 😶‍🌫️")
+                await message.answer(MESSAGES.get("clear_history_success", "История очищена"))
             else:
-                await message.answer("Ой-ой, что-то пошло не так, скоро меня починят😖")
+                await message.answer(MESSAGES.get("clear_history_error", "Ошибка"))
     except Exception:
         logging.exception("Ошибка при очистке истории:")
-        await message.answer("Ой-ой, что-то пошло не так, скоро меня починят😖")
+        await message.answer(MESSAGES.get("clear_history_error", "Ошибка"))
 
 
 async def info_handler(message: types.Message):
-    await message.answer(
-        "Меня зовут Менон, я чат-бот Новосибирского Государственного Университета. "
-        "Моя задача — помогать вам получать ответы на вопросы, связанные с НГУ, "
-        "образовательными программами, поступлением и жизнью в Академгородке.\n\n"
-        "Я работаю на основе большой языковой модели с поддержкой поиска по базе знаний университета 📚.\n\n"
-        "Иногда я могу генерировать ответы, которые могут быть восприняты как оскорбительные, дискриминационные или неподобающие. Пользователь обязан самостоятельно оценивать и фильтровать как вводные, так и полученные данные. "
-        "Команда разработчиков не несёт ответственности за любые последствия, возникшие в результате использования данной нейронной сети, включая, но не ограничиваясь, моральный ущерб, дискриминацию или нарушение прав третьих лиц."
-    )
+    await message.answer(MESSAGES.get("info_message", "Информация о боте"))
 
 
 @router.message(F.sticker)
 async def handle_sticker(message: types.Message):
-    await message.answer("🧸 Стикеры — это весело, но я умею только читать текст. Спросите меня что-нибудь текстом!")
+    await message.answer(MESSAGES.get("media_handlers", {}).get("sticker", "Отправьте текст"))
 
 
 @router.message(F.photo)
 async def handle_photo(message: types.Message):
-    await message.answer(
-        "📸 Картинки — это замечательно! Но я пока не понимаю изображения. Попробуйте написать мне вопрос текстом!"
-    )
+    await message.answer(MESSAGES.get("media_handlers", {}).get("photo", "Отправьте текст"))
 
 
 @router.message(F.video)
 async def handle_video(message: types.Message):
-    await message.answer("🎬 Видео — это здорово, но я разбираюсь только в тексте. Спросите меня что-нибудь!")
+    await message.answer(MESSAGES.get("media_handlers", {}).get("video", "Отправьте текст"))
 
 
 @router.message(F.voice)
 async def handle_voice(message: types.Message):
-    await message.answer("🎤 Голос услышал, но мне бы текст — так я точно пойму и отвечу!")
+    await message.answer(MESSAGES.get("media_handlers", {}).get("voice", "Отправьте текст"))
 
 
 @router.message(F.video_note)
 async def handle_video_note(message: types.Message):
-    await message.answer("🎥 Кружочки прикольные, но я пока не умею их понимать. Попробуйте текстом, так веселее!")
+    await message.answer(MESSAGES.get("media_handlers", {}).get("video_note", "Отправьте текст"))
 
 
 @router.message(F.audio)
 async def handle_audio(message: types.Message):
-    await message.answer("🎧 Музыку люблю, но я бот-помощник, так что давайте пообщаемся текстом!")
+    await message.answer(MESSAGES.get("media_handlers", {}).get("audio", "Отправьте текст"))
 
 
 @router.message(F.document)
 async def handle_document(message: types.Message):
-    await message.answer(
-        "📄 Файлы — это важно, но пока что я умею работать только с текстом. Спросите меня что-нибудь интересное!"
-    )
+    await message.answer(MESSAGES.get("media_handlers", {}).get("document", "Отправьте текст"))
 
 
 @router.message(F.animation)
 async def handle_animation(message: types.Message):
-    await message.answer("🎞️ Гифка засчитана! Но текст — моё всё. Жду вопросик в виде слов!")
+    await message.answer(MESSAGES.get("media_handlers", {}).get("animation", "Отправьте текст"))
 
 
 @router.message(F.contact)
 async def handle_contact(message: types.Message):
-    await message.answer("📇 Контакт получил, но я предпочитаю текстовые беседы!")
+    await message.answer(MESSAGES.get("media_handlers", {}).get("contact", "Отправьте текст"))
 
 
 @router.message(F.location)
 async def handle_location(message: types.Message):
-    await message.answer("📍 Место зафиксировал! А я вот в НГУ нахожусь, можете меня что-нибудь спросить текстом!")
+    await message.answer(MESSAGES.get("media_handlers", {}).get("location", "Отправьте текст"))
 
 
 @router.message(~F.text)
 async def handle_unknown(message: types.Message):
-    await message.answer(
-        "🤷 К сожалению, я пока умею понимать только текст. Напишите мне словами, и я постараюсь помочь!"
-    )
+    await message.answer(MESSAGES.get("media_handlers", {}).get("unknown", "Отправьте текст"))
 
 
 async def main():
     load_phrases()
+    load_messages()
 
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
@@ -522,7 +511,6 @@ async def main():
         F.text,
     )
 
-    # Остальные хэндлеры уже зарегистрированы декораторами
     dp.include_router(router)
 
     logging.info("Бот запущен")
