@@ -16,6 +16,12 @@ from aiogram.types import BotCommand, User
 from aiohttp import ClientTimeout
 
 from meno_telegram_bot.settings import settings
+from meno_telegram_bot.utils.telegram_format import (
+    escape_markdown_v2,
+    prepare_final_message,
+    prepare_stream_chunk,
+    sanitize_llm_artifacts,
+)
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
@@ -76,23 +82,6 @@ def load_messages(path: str = "src/meno_telegram_bot/data/messages.json"):
 
 def random_phrase(category: str) -> str:
     return random.choice(PHRASES.get(category, ["..."]))
-
-
-def escape_markdown_v2(text: str) -> str:
-    """
-    Экранирует спецсимволы MarkdownV2 согласно Telegram Bot API:
-    https://core.telegram.org/bots/api#markdownv2-style
-    """
-    escape_chars = r"_*[]()~`>#+-=|{}.!\\"
-    return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
-
-
-def convert_double_to_single_stars(text: str) -> str:
-    return re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
-
-
-def prepare_for_markdown_v2(text: str) -> str:
-    return escape_markdown_v2(convert_double_to_single_stars(text))
 
 
 async def get_backend_response(payload: dict, session: aiohttp.ClientSession) -> str:
@@ -272,12 +261,13 @@ async def process_backend(
                     if stop_event is not None and not first_answer_sent:
                         stop_event.set()
                         first_answer_sent = True
-                    prepared = prepare_for_markdown_v2(visible_candidate)
+                    prepared = prepare_stream_chunk(visible_candidate)
                     await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
                 except Exception as e:
                     logging.error(f"Ошибка форматирования / edit_text в стриме: {e}")
                     try:
-                        await msg_to_edit.edit_text(visible_candidate, parse_mode="MarkdownV2")
+                        fallback_chunk = escape_markdown_v2(sanitize_llm_artifacts(visible_candidate))
+                        await msg_to_edit.edit_text(fallback_chunk, parse_mode="MarkdownV2")
                     except Exception as e2:
                         logging.error(f"Не удалось обновить сообщение без Markdown: {e2}")
 
@@ -287,38 +277,38 @@ async def process_backend(
             logging.warning(f"Non-stream ответ backend: {repr(reply)}")
 
             reply_clean = strip_think_from_text(reply)
-            final_answer = reply_clean
+            final_answer = sanitize_llm_artifacts(reply_clean)
 
             if stop_event is not None and not stop_event.is_set():
                 stop_event.set()
 
             try:
-                prepared = prepare_for_markdown_v2(reply_clean)
+                prepared = prepare_final_message(reply_clean)
                 await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
             except Exception as e:
                 logging.error(f"Ошибка форматирования MarkdownV2 (fallback): {e}")
-                await msg_to_edit.edit_text(reply_clean)
+                await msg_to_edit.edit_text(escape_markdown_v2(final_answer), parse_mode="MarkdownV2")
         else:
             answer_clean = strip_think_from_text(raw_answer)
-            final_answer = answer_clean
+            final_answer = sanitize_llm_artifacts(answer_clean)
 
             if stop_event is not None and not stop_event.is_set():
                 stop_event.set()
             try:
-                prepared = prepare_for_markdown_v2(answer_clean)
+                prepared = prepare_final_message(answer_clean)
                 await msg_to_edit.edit_text(prepared, parse_mode="MarkdownV2")
             except Exception as e:
                 logging.error(f"Ошибка финального форматирования MarkdownV2: {e}")
-                await msg_to_edit.edit_text(answer_clean)
+                await msg_to_edit.edit_text(escape_markdown_v2(final_answer), parse_mode="MarkdownV2")
 
     except Exception as e:
         logging.error(f"Ошибка при обработке запроса: {e}")
         try:
             fallback = random_phrase("fallback")
-            final_answer = final_answer or fallback
+            final_answer = sanitize_llm_artifacts(final_answer) if final_answer else sanitize_llm_artifacts(fallback)
             if stop_event is not None and not stop_event.is_set():
                 stop_event.set()
-            await msg_to_edit.edit_text(fallback)
+            await msg_to_edit.edit_text(escape_markdown_v2(final_answer), parse_mode="MarkdownV2")
         except Exception:
             logging.exception("Не удалось отправить fallback-сообщение")
     finally:
