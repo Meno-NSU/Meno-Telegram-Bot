@@ -87,12 +87,65 @@ def escape_markdown_v2(text: str) -> str:
     return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
 
 
-def convert_double_to_single_stars(text: str) -> str:
-    return re.sub(r"\*\*(.*?)\*\*", r"*\1*", text)
+def _escape_markdown_v2_preserving(text: str, preserved_tokens: set[str]) -> str:
+    """
+    Экранирует MarkdownV2-символы, но оставляет маркеры форматирования,
+    чтобы их можно было восстановить после экранирования содержимого.
+    """
+    escape_chars = r"_*[]()~`>#+-=|{}.!\\"
+    pattern = f"([{re.escape(escape_chars)}])"
+    parts = re.split("(" + "|".join(map(re.escape, preserved_tokens)) + ")", text)
+    escaped_parts = []
+    for part in parts:
+        if part in preserved_tokens:
+            escaped_parts.append(part)
+        else:
+            escaped_parts.append(re.sub(pattern, r"\\\1", part))
+    return "".join(escaped_parts)
+
+
+def convert_markdown_to_telegram(text: str) -> str:
+    """
+    Преобразует ограниченный Markdown (курсив, жирный, заголовки)
+    в совместимую с Telegram MarkdownV2 разметку.
+    """
+    bold_open, bold_close = "@@B_OPEN@@", "@@B_CLOSE@@"
+    italic_open, italic_close = "@@I_OPEN@@", "@@I_CLOSE@@"
+    preserved_tokens = {bold_open, bold_close, italic_open, italic_close}
+
+    def heading_to_bold(match: re.Match[str]) -> str:
+        content = match.group(2).strip()
+        return f"{bold_open}{content}{bold_close}"
+
+    def bold_repl(match: re.Match[str]) -> str:
+        content = match.group(1)
+        return f"{bold_open}{content}{bold_close}"
+
+    def italic_repl(match: re.Match[str]) -> str:
+        content = match.group(1)
+        return f"{italic_open}{content}{italic_close}"
+
+    # Заголовки считаем жирным
+    text = re.sub(r"^(#{1,6})\s*(.+)$", heading_to_bold, text, flags=re.MULTILINE)
+    # Жирный: **text** или __text__
+    text = re.sub(r"\*\*(.+?)\*\*", bold_repl, text)
+    text = re.sub(r"__(.+?)__", bold_repl, text)
+    # Курсив: *text* или _text_ (не совпадает с жирным)
+    text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", italic_repl, text)
+    text = re.sub(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)", italic_repl, text)
+
+    escaped = _escape_markdown_v2_preserving(text, preserved_tokens)
+
+    return (
+        escaped.replace(bold_open, "*")
+        .replace(bold_close, "*")
+        .replace(italic_open, "_")
+        .replace(italic_close, "_")
+    )
 
 
 def prepare_for_markdown_v2(text: str) -> str:
-    return escape_markdown_v2(convert_double_to_single_stars(text))
+    return convert_markdown_to_telegram(text)
 
 
 async def get_backend_response(payload: dict, session: aiohttp.ClientSession) -> str:
